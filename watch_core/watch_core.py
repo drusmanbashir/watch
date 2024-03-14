@@ -1,8 +1,10 @@
 import logging
+import time
 import os
 from typing import Annotated, Optional
 
-import vtk
+import vtk, qt
+from slicer.util import VTKObservationMixin, mainWindow
 
 import slicer
 from slicer.ScriptedLoadableModule import *
@@ -135,6 +137,8 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
+        self._updatingGUIFromParameterNode = False
+
 
     def setup(self) -> None:
         """
@@ -158,16 +162,61 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = watch_coreLogic()
 
         # Connections
+        self.ui.inputSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.updateParameterNodeFromGUI)
 
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
         # Buttons
-        self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
+        self.ui.startButton.connect('clicked(bool)', self.onStartButton)
+        self.ui.stopButton.connect('clicked(bool)', self.onStopButton)
+        self.ui.resetButton.connect('clicked(bool)', self.onResetButton)
+        # self.ui.saveButton.connect('clicked(bool)',self.onSaveButton)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
+
+        self.set_layout()
+
+
+    def set_layout(self):
+        customLay = """
+        <layout type="vertical" split="true">
+
+          <item>
+          <view class="vtkMRMLSliceNode" singletontag="Red">
+            <property name="orientation" action="default">Coronal</property>
+            <property name="viewlabel" action="default">R</property>
+            <property name="viewcolor" action="default">#F34A33</property>
+          </view>
+          </item>
+                    <item>
+          <view class="vtkMRMLSliceNode" singletontag="Green">
+            <property name="orientation" action="default">Axial</property>
+            <property name="viewlabel" action="default">A</property>
+            <property name="viewcolor" action="default">#6EB04A</property>
+          </view>
+          </item>
+        </layout>
+        """
+
+        # Built-in layout IDs are all below 100, so you can choose any large random number
+        # for your custom layout ID.
+        customLayoutId = 532
+
+        layoutManager = slicer.app.layoutManager()
+        layoutManager.layoutLogic().GetLayoutNode().AddLayoutDescription(customLayoutId, customLay)
+
+        # Switch to the new custom layout
+        layoutManager.setLayout(customLayoutId)
+        viewToolBar = mainWindow().findChild("QToolBar", "ViewToolBar")
+        layoutMenu = viewToolBar.widgetForAction(viewToolBar.actions()[0]).menu()
+        layoutSwitchActionParent = layoutMenu  # use `layoutMenu` to add inside layout list, use `viewToolBar` to add next the standard layout list
+        layoutSwitchAction = layoutSwitchActionParent.addAction("My view")  # add inside layout list
+        layoutSwitchAction.setData(customLayoutId)
+        layoutSwitchAction.setIcon(qt.QIcon(":Icons/Go.png"))
+        layoutSwitchAction.setToolTip("Comparison")
 
     def cleanup(self) -> None:
         """
@@ -179,6 +228,7 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         Called each time the user opens this module.
         """
+
         # Make sure parameter node exists and observed
         self.initializeParameterNode()
 
@@ -227,17 +277,82 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         Set and observe parameter node.
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
-
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        if self._parameterNode is not None and self.hasObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode):
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
         self._parameterNode = inputParameterNode
-        if self._parameterNode:
-            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-            # ui element that needs connection.
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-            self._checkCanApply()
+        if self._parameterNode is not None:
+            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.updateGUIFromParameterNode)
+
+        # Initial GUI update
+        self.updateGUIFromParameterNode()
+
+        #
+        # if self._parameterNode:
+        #     self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+        #     self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        # self._parameterNode = inputParameterNode
+        # if self._parameterNode:
+        #     # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
+        #     # ui element that needs connection.
+        #     self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
+        #     self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+        #     self._checkCanApply()
+
+
+    def updateGUIFromParameterNode(self, caller=None, event=None):
+        """
+        This method is called whenever parameter node is changed.
+        The module GUI is updated to show the current state of the parameter node.
+        """
+
+        if self._parameterNode is None or self._updatingGUIFromParameterNode:
+            return
+
+        # Make sure GUI changes do not call updateParameterNodeFromGUI (it could cause infinite loop)
+        self._updatingGUIFromParameterNode = True
+
+        # # Update node selectors and sliders
+        # self.ui.scanASelector.setCurrentNode(self._parameterNode.GetNodeReference("ScanA"))
+        # self.ui.scanBSelector.setCurrentNode(self._parameterNode.GetNodeReference("ScanB"))
+        #
+        # # Update buttons states and tooltips
+        # if self._parameterNode.GetNodeReference("ScanA"):
+        #     self.ui.segButton.enabled = True
+        #     self.ui.emSegButton.enabled = True
+        #     self.ui.labelButton.enabled = True
+        # if self._parameterNode.GetNodeReference("ScanA") and self._parameterNode.GetNodeReference("ScanB"):
+        #     self.ui.segRegButton.toolTip = "Compute output volume"
+        #     self.ui.segRegButton.enabled = True
+        # else:
+        #     self.ui.segRegButton.toolTip = "Select input and output volume nodes"
+        #     self.ui.segRegButton.enabled = False
+        #
+        # All the GUI updates are done
+        self._updatingGUIFromParameterNode = False
+
+
+    def updateParameterNodeFromGUI(self, caller=None, event=None):
+        """
+        This method is called when the user makes any change in the GUI.
+        The changes are saved into the parameter node (so that they are restored when the scene is saved and loaded).
+
+        """
+
+        if self._parameterNode is None or self._updatingGUIFromParameterNode:
+            return
+
+        # lm = slicer.app.layoutManager()
+        # red = lm.sliceWidget("Red").sliceView().mrmlSliceNode()
+        # sliceLogic = slicer.app.applicationLogic().GetSliceLogic(red)
+        # compositeNode = sliceLogic.GetSliceCompositeNode()
+        # id = compositeNode.GetBackgroundVolumeID()
+        # vol = slicer.mrmlScene.GetNodeByID(id)
+        wasModified = self._parameterNode.StartModify()  # Modify all properties in a single batch
+
+        # self._parameterNode.SetNodeReferenceID("ScanA", self.ui.inputSelector.currentNodeID)
+        # self._parameterNode.SetNodeReferenceID("OutputVolume", self.ui.outputSelector.currentNodeID)
+
+        self._parameterNode.EndModify(wasModified)
 
     def _checkCanApply(self, caller=None, event=None) -> None:
         if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
@@ -247,10 +362,13 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.applyButton.toolTip = "Select input and output volume nodes"
             self.ui.applyButton.enabled = False
 
-    def onApplyButton(self) -> None:
+    def onStartButton(self) -> None:
         """
         Run processing when user clicks "Apply" button.
         """
+        self.ui.stopButton.setEnabled(True)
+        self.ui.resetButton.setEnabled(True)
+        self.ui.startButton.setEnabled(False)
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
 
             # Compute output
@@ -263,8 +381,20 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
                                    self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
 
+    def onResetButton(self):
+        self.ui.resetButton.setEnabled(False)
+        self.ui.stopButton.setEnabled(False)
+        self.ui.startButton.setEnabled(True)
+        self.logic.reset()
 
+    def onStopButton(self):
+        self.ui.startButton.setEnabled(True)
+        self.ui.resetButton.setEnabled(True)
+        self.ui.stopButton.setEnabled(False)
+        self.logic.stop()
 #
+    def onSaveButton(self):
+        pass
 # watch_coreLogic
 #
 
@@ -283,9 +413,23 @@ class watch_coreLogic(ScriptedLoadableModuleLogic):
         Called when the logic class is instantiated. Can be used for initializing member variables.
         """
         ScriptedLoadableModuleLogic.__init__(self)
+        self.reset()
 
     def getParameterNode(self):
         return watch_coreParameterNode(super().getParameterNode())
+
+    def reset(self):
+        self.startTime =0
+        self.startTime=0
+        if hasattr(self,"ida"):
+            nd = slicer.mrmlScene.GetNodeByID(self.ida)
+            slicer.mrmlScene.RemoveNode(nd)
+
+    def stop(self):
+        self.stopTime = time.time()
+        mn = slicer.mrmlScene.GetNodeByID(self.ida)
+        mn.SetControlPointLabelFormat(str(self.stopTime-self.startTime))
+
 
     def process(self,
                 inputVolume: vtkMRMLScalarVolumeNode,
@@ -303,92 +447,40 @@ class watch_coreLogic(ScriptedLoadableModuleLogic):
         :param showResult: show output volume in slice viewers
         """
 
-        if not inputVolume or not outputVolume:
-            raise ValueError("Input or output volume is invalid")
+        if not inputVolume:
+            raise ValueError("Input volume is invalid")
 
-        import time
-        startTime = time.time()
+        inputVolume.GetScalarVolumeDisplayNode().AutoWindowLevelOff()
+        inputVolume.GetScalarVolumeDisplayNode().SetWindowLevel(350,50)
+        self.startTime = time.time()
         logging.info('Processing started')
 
-        # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            'InputVolume': inputVolume.GetID(),
-            'OutputVolume': outputVolume.GetID(),
-            'ThresholdValue': imageThreshold,
-            'ThresholdType': 'Above' if invert else 'Below'
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
+        mn = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode')
+        mn_name = inputVolume.GetName()+"_rad"
+        mn.SetName(mn_name)
+        self.ida = mn.GetID()
+        self.hideOtherFiducials(self.ida)
 
-        stopTime = time.time()
-        logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+    def hideOtherFiducials(self,nodeID):
+        fids = slicer.mrmlScene.GetNodesByClass('vtkMRMLMarkupsFiducialNode')
+        for fid in fids:
+            id = fid.GetID()
+            if id != nodeID:
+                disp = fid.GetDisplayNode()
+                disp.SetVisibility(False)
 
+
+
+
+if __name__ == '__main__':
+    w = slicer.qSlicerMarkupsPlaceWidget()
+    w.setMRMLScene(slicer.mrmlScene)
+    markupsNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsCurveNode')
+    w.setCurrentNode(slicer.mrmlScene.GetNodeByID(markupsNode.GetID()))
+    w.buttonsVisible = False
+    w.placeButton().show()
+    w.show()
 
 #
 # watch_coreTest
 #
-
-class watch_coreTest(ScriptedLoadableModuleTest):
-    """
-    This is the test case for your scripted module.
-    Uses ScriptedLoadableModuleTest base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
-
-    def setUp(self):
-        """ Do whatever is needed to reset the state - typically a scene clear will be enough.
-        """
-        slicer.mrmlScene.Clear()
-
-    def runTest(self):
-        """Run as few or as many tests as needed here.
-        """
-        self.setUp()
-        self.test_watch_core1()
-
-    def test_watch_core1(self):
-        """ Ideally you should have several levels of tests.  At the lowest level
-        tests should exercise the functionality of the logic with different inputs
-        (both valid and invalid).  At higher levels your tests should emulate the
-        way the user would interact with your code and confirm that it still works
-        the way you intended.
-        One of the most important features of the tests is that it should alert other
-        developers when their changes will have an impact on the behavior of your
-        module.  For example, if a developer removes a feature that you depend on,
-        your test should break so they know that the feature is needed.
-        """
-
-        self.delayDisplay("Starting the test")
-
-        # Get/create input data
-
-        import SampleData
-        registerSampleData()
-        inputVolume = SampleData.downloadSample('watch_core1')
-        self.delayDisplay('Loaded test data set')
-
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(inputScalarRange[0], 0)
-        self.assertEqual(inputScalarRange[1], 695)
-
-        outputVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-        threshold = 100
-
-        # Test the module logic
-
-        logic = watch_coreLogic()
-
-        # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], threshold)
-
-        # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], inputScalarRange[1])
-
-        self.delayDisplay('Test passed')
