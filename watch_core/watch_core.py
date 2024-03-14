@@ -370,16 +370,7 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.resetButton.setEnabled(True)
         self.ui.startButton.setEnabled(False)
         with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
-
-            # Compute output
-            self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),
-                               self.ui.imageThresholdSliderWidget.value, self.ui.invertOutputCheckBox.checked)
-
-            # Compute inverted output (if needed)
-            if self.ui.invertedOutputSelector.currentNode():
-                # If additional output volume is selected then result with inverted threshold is written there
-                self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
-                                   self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
+            self.logic.process(self.ui.inputSelector.currentNode())
 
     def onResetButton(self):
         self.ui.resetButton.setEnabled(False)
@@ -432,20 +423,7 @@ class watch_coreLogic(ScriptedLoadableModuleLogic):
 
 
     def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
-                imageThreshold: float,
-                invert: bool = False,
-                showResult: bool = True) -> None:
-        """
-        Run the processing algorithm.
-        Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
-        :param outputVolume: thresholding result
-        :param imageThreshold: values above/below this threshold will be set to 0
-        :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
-        :param showResult: show output volume in slice viewers
-        """
+                inputVolume: vtkMRMLScalarVolumeNode):
 
         if not inputVolume:
             raise ValueError("Input volume is invalid")
