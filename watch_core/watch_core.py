@@ -341,6 +341,8 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self._parameterNode is None or self._updatingGUIFromParameterNode:
             return
 
+        volumeNode = caller.GetID()
+        slicer.util.setSliceViewerLayers(background=volumeNode)
         # lm = slicer.app.layoutManager()
         # red = lm.sliceWidget("Red").sliceView().mrmlSliceNode()
         # sliceLogic = slicer.app.applicationLogic().GetSliceLogic(red)
@@ -349,8 +351,6 @@ class watch_coreWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # vol = slicer.mrmlScene.GetNodeByID(id)
         wasModified = self._parameterNode.StartModify()  # Modify all properties in a single batch
 
-        # self._parameterNode.SetNodeReferenceID("ScanA", self.ui.inputSelector.currentNodeID)
-        # self._parameterNode.SetNodeReferenceID("OutputVolume", self.ui.outputSelector.currentNodeID)
 
         self._parameterNode.EndModify(wasModified)
 
@@ -437,15 +437,26 @@ class watch_coreLogic(ScriptedLoadableModuleLogic):
         mn_name = inputVolume.GetName()+"_rad"
         mn.SetName(mn_name)
         self.ida = mn.GetID()
-        self.hideOtherFiducials(self.ida)
+        self.hideOtherFiducials(mn)
 
-    def hideOtherFiducials(self,nodeID):
+    def hideOtherFiducials(self,mn):
+
+        mn_name= mn.GetName()
         fids = slicer.mrmlScene.GetNodesByClass('vtkMRMLMarkupsFiducialNode')
         for fid in fids:
-            id = fid.GetID()
-            if id != nodeID:
+            fid_name= fid.GetName()
+            if not partial_match(mn_name,fid_name):
                 disp = fid.GetDisplayNode()
                 disp.SetVisibility(False)
+
+
+def partial_match(str1,str2):
+    str1= str1[:12]
+    str2= str2[:12]
+    if str1==str2:
+        return True
+    else:
+        return False
 
 
 
